@@ -1,0 +1,5 @@
+FROM golang:1.17.2-alpine3.14
+ENV GO111MODULE=off
+WORKDIR /go/src/github.com/binn-client
+RUN apk --update add alpine-sdk
+RUN go get github.com/stretchr/testify
