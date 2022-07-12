@@ -16,19 +16,20 @@ const (
 	POST_COMMAND = "post"
 )
 
-func getHandler(cli *client.Client, following bool) {
+func getHandler(cli *client.Client) {
+	ch, errCh := cli.Get()
 	for {
-		if b, err := cli.Get(); err == nil {
+		select {
+		case rb := <-ch:
 			fmt.Printf("==================================================================\n")
-			fmt.Printf("id        : %s\n", b.ID)
-			fmt.Printf("message   : \n%s\n", b.Message.Text)
-			fmt.Printf("expired_at: %s\n", b.ExpiredAt.Format("Mon, 02 Jan 2006 15:04:05"))
-		} else {
+			fmt.Printf("id        : %s\n", rb.ID)
+			fmt.Printf("message   : \n%s\n", rb.Message.Text)
+			fmt.Printf("expired_at: %s\n", rb.ExpiredAt.Format("Mon, 02 Jan 2006 15:04:05"))
+			break
+		case err := <-errCh:
 			fmt.Printf("%s\n", err)
-			return
-		}
-		if !following {
-			return
+		default:
+			break
 		}
 	}
 }
@@ -62,7 +63,6 @@ Usage:
 }
 
 func main() {
-	following := flag.Bool("f", false, "")
 	flag.Parse()
 	
 	if flag.NArg() < 2 {
@@ -76,7 +76,7 @@ func main() {
 
 	switch args[0] {
 	case GET_COMMAND:
-		getHandler(cli, *following)
+		getHandler(cli)
 	case POST_COMMAND:
 		if flag.NArg() < 3 {
 			fmt.Printf(helpText())
