@@ -1,10 +1,12 @@
 package client
 
 import (
+	"io"
 	"fmt"
 	"time"
 	"bufio"
 	"bytes"
+	"strings"
 	"net/http"
 	"encoding/json"
 )
@@ -39,6 +41,49 @@ func NewClient(url string, timeout time.Duration) *Client {
 	}
 }
 
+func NewEventStreamScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024), 1024)
+	split := func(data []byte, atEOF bool) (int, []byte, error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
+			return i + 2, data[0:i], nil
+		}
+		if atEOF {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	}
+	scanner.Split(split)
+
+	return scanner
+}
+
+type EventMessage struct {
+	Event string
+	Data  string
+}
+
+func ParseEventMessage(b []byte) *EventMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	
+	fields := strings.Split(string(b), "\n")	
+	var em EventMessage
+	for _, field := range fields {
+		if n := strings.Index(field, "event: "); n >= 0 {
+			em.Event = strings.TrimRight(field[n + 7:], "\n")
+		} else if n := strings.Index(field, "data: "); n >= 0 {
+			em.Data = strings.TrimRight(field[n + 6:], "\n")
+		}
+	}
+
+	return &em
+}
+
 func (c *Client) Get() (chan *responseBottle, chan error) {
 	ch := make(chan *responseBottle)
 	errCh := make(chan error)
@@ -58,23 +103,7 @@ func (c *Client) Get() (chan *responseBottle, chan error) {
 			errCh <- err
 			return
 		}
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 1024), 1024)
-		split := func(data []byte, atEOF bool) (int, []byte, error) {
-			if atEOF && len(data) == 0 {
-				return 0, nil, nil
-			}
-			if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
-				return i + 2, data[0:i], nil
-			}
-			if atEOF {
-				fmt.Printf("[EOF]\n")
-				return len(data), data, nil
-			}
-			return 0, nil, nil
-		}
-
-		scanner.Split(split)
+		scanner := NewEventStreamScanner(resp.Body)
 
 	Loop:
 		for {
@@ -84,11 +113,12 @@ func (c *Client) Get() (chan *responseBottle, chan error) {
 			default:
 				if scanner.Scan() {
 					data := scanner.Bytes()
-					if len(data) == 0 {
+					em := ParseEventMessage(data)
+					if em == nil {
 						break
 					}
 					var res responseBottle
-					if err := json.Unmarshal(data[6:], &res); err != nil {
+					if err := json.Unmarshal([]byte(em.Data), &res); err != nil {
 						errCh <- err
 						break
 					}
