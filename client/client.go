@@ -1,15 +1,24 @@
 package client
 
 import (
-	"io"
-	"fmt"
-	"time"
 	"bufio"
 	"bytes"
-	"strings"
-	"net/http"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 )
+
+type Bottle struct {
+	ID        string `json:"id"`
+	Msg       string `json:"msg"`
+	Token     string `json:"token"`
+	ExpiredAt int64  `json:"expired_at"`
+}
 
 type Message struct {
 	Text string `json:"text"`
@@ -32,13 +41,82 @@ type Client struct {
 	httpClient *http.Client
 }
 
-func NewClient(url string, timeout time.Duration) *Client {
+func NewClient(url string) *Client {
 	return &Client{
 		url:        url,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		httpClient: &http.Client{},
 	}
+}
+
+func buildGetStreamEndpointPath(base string) (string, error) {
+	return url.JoinPath(base, "/stream")
+}
+
+func (cli *Client) RunGetByText(ctx context.Context) (chan *Bottle, chan error) {
+	ch := make(chan *Bottle, 0)
+	errCh := make(chan error, 0)
+	go func() {
+		p, err := buildGetStreamEndpointPath(cli.url)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		req, err := http.NewRequest(http.MethodGet, p, nil)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resp, err := cli.httpClient.Do(req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+		dec := json.NewDecoder(resp.Body)
+		for dec.More() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				var b *Bottle
+				if err := dec.Decode(&b); err != nil {
+					errCh <- err
+					return
+				}
+				ch <- b
+			}
+		}
+	}()
+	return ch, errCh
+}
+
+func buildPostBottleEndpointPath(base string) (string, error) {
+	return url.JoinPath(base, "/bottles")
+}
+
+func (cli *Client) PostBottle(ctx context.Context, b *Bottle) (ok bool, err error) {
+	p, err := buildPostBottleEndpointPath(cli.url)
+	if err != nil {
+		return false, err
+	}
+	data, err := json.Marshal(&b)
+	if err != nil {
+		return false, err
+	}
+	r := bytes.NewReader(data)
+	req, err := http.NewRequest(http.MethodPost, p, r)
+	if err != nil {
+		return false, err
+	}
+	resp, err := cli.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, nil
+	}
+	return true, nil
 }
 
 func NewEventStreamScanner(r io.Reader) *bufio.Scanner {
@@ -70,14 +148,14 @@ func ParseEventMessage(b []byte) *EventMessage {
 	if len(b) == 0 {
 		return nil
 	}
-	
-	fields := strings.Split(string(b), "\n")	
+
+	fields := strings.Split(string(b), "\n")
 	var em EventMessage
 	for _, field := range fields {
 		if n := strings.Index(field, "event: "); n >= 0 {
-			em.Event = strings.TrimRight(field[n + 7:], "\n")
+			em.Event = strings.TrimRight(field[n+7:], "\n")
 		} else if n := strings.Index(field, "data: "); n >= 0 {
-			em.Data = strings.TrimRight(field[n + 6:], "\n")
+			em.Data = strings.TrimRight(field[n+6:], "\n")
 		}
 	}
 
@@ -97,7 +175,7 @@ func (c *Client) Get() (chan *responseBottle, chan error) {
 			errCh <- err
 			return
 		}
-		
+
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			errCh <- err
@@ -133,14 +211,14 @@ func (c *Client) Get() (chan *responseBottle, chan error) {
 			}
 		}
 	}()
-	
+
 	return ch, errCh
 }
 
 func (c *Client) Post(id string, text string) error {
 	rb := &requestBottle{
-		ID:        id,
-		Message:   &Message{
+		ID: id,
+		Message: &Message{
 			Text: text,
 		},
 	}
