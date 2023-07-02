@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type Bottle struct {
@@ -18,22 +17,6 @@ type Bottle struct {
 	Msg       string `json:"msg"`
 	Token     string `json:"token"`
 	ExpiredAt int64  `json:"expired_at"`
-}
-
-type Message struct {
-	Text string `json:"text"`
-}
-
-type requestBottle struct {
-	ID        string     `json:"id"`
-	Message   *Message   `json:"message"`
-	ExpiredAt *time.Time `json:"expired_at"`
-}
-
-type responseBottle struct {
-	ID        string     `json:"id"`
-	Message   *Message   `json:"message"`
-	ExpiredAt *time.Time `json:"expired_at"`
 }
 
 type Client struct {
@@ -49,7 +32,7 @@ func NewClient(url string) *Client {
 }
 
 func buildGetStreamEndpointPath(base string) (string, error) {
-	return url.JoinPath(base, "/stream")
+	return url.JoinPath(base, "/bottles/stream")
 }
 
 func (cli *Client) RunGetByText(ctx context.Context) (chan *Bottle, chan error) {
@@ -58,17 +41,17 @@ func (cli *Client) RunGetByText(ctx context.Context) (chan *Bottle, chan error) 
 	go func() {
 		p, err := buildGetStreamEndpointPath(cli.url)
 		if err != nil {
-			errCh <- err
+			errCh <- fmt.Errorf("failed to build endpoint path: %w", err)
 			return
 		}
 		req, err := http.NewRequest(http.MethodGet, p, nil)
 		if err != nil {
-			errCh <- err
+			errCh <- fmt.Errorf("failed to build http request: %w", err)
 			return
 		}
 		resp, err := cli.httpClient.Do(req)
 		if err != nil {
-			errCh <- err
+			errCh <- fmt.Errorf("failed to request: %w", err)
 			return
 		}
 		defer resp.Body.Close()
@@ -80,7 +63,7 @@ func (cli *Client) RunGetByText(ctx context.Context) (chan *Bottle, chan error) 
 			default:
 				var b *Bottle
 				if err := dec.Decode(&b); err != nil {
-					errCh <- err
+					errCh <- fmt.Errorf("failed to decode json: %w", err)
 					return
 				}
 				ch <- b
@@ -160,74 +143,4 @@ func ParseEventMessage(b []byte) *EventMessage {
 	}
 
 	return &em
-}
-
-func (c *Client) Get() (chan *responseBottle, chan error) {
-	ch := make(chan *responseBottle)
-	errCh := make(chan error)
-
-	go func() {
-		req, err := http.NewRequest("GET", c.url, nil)
-		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Connection", "keep-alive")
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		scanner := NewEventStreamScanner(resp.Body)
-
-	Loop:
-		for {
-			select {
-			case <-req.Context().Done():
-				break Loop
-			default:
-				if scanner.Scan() {
-					data := scanner.Bytes()
-					em := ParseEventMessage(data)
-					if em == nil {
-						break
-					}
-					var res responseBottle
-					if err := json.Unmarshal([]byte(em.Data), &res); err != nil {
-						errCh <- err
-						break
-					}
-					ch <- &res
-					break
-				}
-				if err := scanner.Err(); err != nil {
-					errCh <- err
-					return
-				}
-				break
-			}
-		}
-	}()
-
-	return ch, errCh
-}
-
-func (c *Client) Post(id string, text string) error {
-	rb := &requestBottle{
-		ID: id,
-		Message: &Message{
-			Text: text,
-		},
-	}
-
-	if byte_, err := json.Marshal(rb); err != nil {
-		return fmt.Errorf("%w", err)
-	} else {
-		payload := bytes.NewBuffer(byte_)
-		_, err := c.httpClient.Post(c.url, "application/json", payload)
-		return err
-	}
 }
