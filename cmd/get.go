@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/nbskp/binn-cli/client"
 	"github.com/nbskp/binn-cli/config"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/websocket"
+	"nhooyr.io/websocket"
 )
-
-var Ws bool
 
 func getCmd() *cobra.Command {
 	ws := false
@@ -53,20 +53,41 @@ func handleStream(cmd *cobra.Command, c *config.Config) {
 }
 
 func handleWebsocket(cmd *cobra.Command, c *config.Config) {
-	ws, err := websocket.Dial(fmt.Sprintf("ws://%s/bottles/ws", c.Host), "", fmt.Sprintf("http://%s", c.Host))
+	ws, _, err := websocket.Dial(cmd.Context(), fmt.Sprintf("ws://%s/bottles/ws", c.Host), nil)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	dec := json.NewDecoder(ws)
-	for dec.More() {
-		var b client.Bottle
-		if err := dec.Decode(&b); err == io.EOF {
-			break
-		} else if err != nil {
-			fmt.Println(err)
+	defer ws.Close(websocket.StatusInternalError, "disconnected")
+
+	ch := make(chan os.Signal)
+	signal.Notify(ch, os.Interrupt)
+	go func() {
+		select {
+		case <-ch:
+			ws.Close(websocket.StatusNormalClosure, "disconnected")
+			return
 		}
-		printBottle(&b)
+	}()
+
+	for {
+		_, rd, err := ws.Reader(cmd.Context())
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		dec := json.NewDecoder(rd)
+		for dec.More() {
+			var b client.Bottle
+			if err := dec.Decode(&b); err == io.EOF {
+				break
+			} else if err != nil {
+				fmt.Println(err)
+				return
+			}
+			printBottle(&b)
+		}
+		//ws.CloseRead(cmd.Context())
 	}
 }
 

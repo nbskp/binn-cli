@@ -74,7 +74,7 @@ func (cli *Client) RunGetByText(ctx context.Context) (chan *Bottle, chan error) 
 }
 
 func buildPostBottleEndpointPath(base string) (string, error) {
-	return url.JoinPath(base, "/bottles")
+	return url.JoinPath(base, "/bottles/")
 }
 
 func (cli *Client) PostBottle(ctx context.Context, b *Bottle) (ok bool, err error) {
